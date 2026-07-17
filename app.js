@@ -1,12 +1,13 @@
 /* ─────────────────────────────────────────────
-   RentEase – app.js  (Security-hardened)
-   All write operations require authentication.
-   Loads security.js first (see index.html).
+   RentEase – app.js  (Firebase Real-Time Sync)
+   All devices share the same live database.
+   Edit firebase-config.js to connect your project.
 ───────────────────────────────────────────── */
 
 
 const TOTAL_ROOMS = 18;
-const STORAGE_KEY = 'rentease_data';
+const STORAGE_KEY = 'rentease_data';   // local offline cache key
+const FB_PATH     = 'rentease/rooms';  // Firebase Realtime DB path
 
 // ── Default tenant structure ──
 const emptyTenant = () => ({
@@ -16,12 +17,18 @@ const emptyTenant = () => ({
   billStatus: 'unpaid'
 });
 
-// ── State ──
-let rooms = [];          // array[18] of { occupied, tenant }
-let activeRoom = null;   // currently open room index (0-based)
+// ── App state ──
+let rooms = [];
+let activeRoom = null;
 let currentFilter = 'all';
 let searchQuery = '';
 let confirmCallback = null;
+
+// ── Firebase state ──
+let _db        = null;   // Firebase database instance
+let _roomsRef  = null;   // DB reference for rooms
+let _fbReady   = false;  // true when Firebase is initialised
+let _ignoreNext = false; // suppress echo of our own writes
 
 // ── DOM refs ──
 const $grid       = document.getElementById('roomsGrid');
@@ -36,35 +43,131 @@ const $toast      = document.getElementById('toast');
 const $confirmOverlay = document.getElementById('confirmOverlay');
 const $confirmMsg = document.getElementById('confirmMsg');
 
-// ── Init (async for integrity check) ──
+// ──────────────── INIT ────────────────
+
 async function init() {
   SEC.printConsoleWarning();
 
+  // Try Firebase first; fall back to localStorage if not configured
+  const fbOk = initFirebase();
+  if (!fbOk) await initFromLocalStorage();
+
+  bindEvents();
+}
+
+// ── Firebase init ──
+function initFirebase() {
+  // Guard: config not filled in yet
+  if (
+    typeof FIREBASE_CONFIG === 'undefined' ||
+    !FIREBASE_CONFIG.apiKey ||
+    FIREBASE_CONFIG.apiKey === 'YOUR_API_KEY'
+  ) {
+    updateSyncUI('local');
+    return false;
+  }
+
+  try {
+    firebase.initializeApp(FIREBASE_CONFIG);
+    _db       = firebase.database();
+    _roomsRef = _db.ref(FB_PATH);
+    _fbReady  = true;
+
+    // ── Connection status monitor ──
+    _db.ref('.info/connected').on('value', snap => {
+      updateSyncUI(snap.val() === true ? 'live' : 'offline');
+    });
+
+    // ── Seed Firebase if empty, then listen ──
+    updateSyncUI('syncing');
+    _roomsRef.once('value').then(snap => {
+      if (snap.val() === null) {
+        // First launch — migrate localStorage data into Firebase
+        _seedFirebase();
+      }
+      // Start real-time listener (fires immediately + on every remote change)
+      _roomsRef.on('value', _onFirebaseData);
+    }).catch(err => {
+      console.warn('Firebase read failed:', err);
+      updateSyncUI('offline');
+      initFromLocalStorage();
+    });
+
+    return true;
+  } catch (err) {
+    console.warn('Firebase init failed:', err.message);
+    updateSyncUI('local');
+    return false;
+  }
+}
+
+// Upload localStorage data to Firebase on first launch
+function _seedFirebase() {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  let data = _freshRooms();
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      if (SEC.validateRoomData(parsed)) data = parsed;
+    } catch { /* ignore */ }
+  }
+  _ignoreNext = true;
+  _roomsRef.set(data);
+}
+
+// Real-time listener — fires for every change from any device
+function _onFirebaseData(snapshot) {
+  if (_ignoreNext) { _ignoreNext = false; return; }
+
+  const raw = snapshot.val();
+  if (!raw) return;
+
+  // Firebase stores arrays as objects when there are gaps, normalise
+  const parsed = Array.isArray(raw)
+    ? raw
+    : Object.keys(raw).sort((a,b) => +a - +b).map(k => raw[k]);
+
+  // Schema guard
+  if (!SEC.validateRoomData(parsed)) {
+    console.warn('Firebase data failed schema validation — ignored');
+    SEC.logAction('FB_SCHEMA_FAIL', 'Remote data rejected');
+    return;
+  }
+
+  rooms = parsed;
+  while (rooms.length < TOTAL_ROOMS) rooms.push({ occupied: false, tenant: emptyTenant() });
+  rooms = rooms.slice(0, TOTAL_ROOMS);
+
+  // Keep local cache in sync for offline use
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(rooms));
+
+  renderAll();
+}
+
+// ── Fallback: load from localStorage (no Firebase) ──
+async function initFromLocalStorage() {
   const saved = localStorage.getItem(STORAGE_KEY);
   if (saved) {
     let parsed;
     try { parsed = JSON.parse(saved); }
     catch {
-      showToast('⚠ Data corrupted. Resetting rooms.', 'error');
-      SEC.logAction('DATA_ERROR', 'JSON parse failed — rooms reset');
+      showToast('⚠ Local data corrupted. Resetting.', 'error');
+      SEC.logAction('DATA_ERROR', 'JSON parse failed — reset');
       rooms = _freshRooms();
       save();
       renderAll();
-      bindEvents();
       return;
     }
 
-    // Integrity check
     const intact = await SEC.checkIntegrity(saved);
     if (!intact) {
-      showToast('⚠ Data integrity mismatch — possible tampering detected!', 'error');
-      SEC.logAction('INTEGRITY_FAIL', 'Stored data hash does not match');
+      showToast('⚠ Data integrity mismatch detected!', 'error');
+      SEC.logAction('INTEGRITY_FAIL', 'Hash mismatch');
     }
 
-    // Schema validation
     if (!SEC.validateRoomData(parsed)) {
-      showToast('⚠ Invalid data structure detected. Resetting to safe state.', 'error');
-      SEC.logAction('SCHEMA_FAIL', 'Room data failed schema validation — reset');
+      showToast('⚠ Invalid data. Resetting to safe state.', 'error');
+      SEC.logAction('SCHEMA_FAIL', 'Schema validation failed');
       rooms = _freshRooms();
     } else {
       rooms = parsed;
@@ -74,21 +177,52 @@ async function init() {
   } else {
     rooms = _freshRooms();
   }
-
   renderAll();
-  bindEvents();
 }
 
 function _freshRooms() {
   return Array.from({ length: TOTAL_ROOMS }, () => ({ occupied: false, tenant: emptyTenant() }));
 }
 
-// ── Persist (with integrity hash) ──
+// ──────────────── PERSIST ────────────────
+
 function save() {
   const json = JSON.stringify(rooms);
+
+  if (_fbReady && _roomsRef) {
+    // Write to Firebase — propagates to ALL connected devices
+    updateSyncUI('syncing');
+    _ignoreNext = true;  // don't re-render from our own write
+    _roomsRef.set(rooms)
+      .then(()  => { updateSyncUI('live'); })
+      .catch(() => { updateSyncUI('offline'); });
+  }
+
+  // Always cache locally (works offline too)
   localStorage.setItem(STORAGE_KEY, json);
-  SEC.saveIntegrity(json); // async — fire and forget
+  SEC.saveIntegrity(json); // fire-and-forget
 }
+
+// ──────────────── SYNC UI ────────────────
+
+function updateSyncUI(state) {
+  const pill = document.getElementById('syncPill');
+  const dot  = document.getElementById('syncDot');
+  const txt  = document.getElementById('syncText');
+  if (!pill || !dot || !txt) return;
+
+  pill.className = 'sync-pill ' + state;
+  const map = {
+    live:    { text: 'Live',        title: 'Synced with cloud — all devices up to date' },
+    syncing: { text: 'Syncing…',   title: 'Saving to cloud…' },
+    offline: { text: 'Offline',     title: 'No connection — changes will sync when back online' },
+    local:   { text: 'Local only',  title: 'Firebase not configured — data is stored locally only' },
+  };
+  const info = map[state] || map.local;
+  txt.textContent  = info.text;
+  pill.title       = info.title;
+}
+
 
 // ──────────────── RENDER ────────────────
 

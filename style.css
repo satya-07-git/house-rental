@@ -10,6 +10,46 @@
   font-weight: 600; margin-top: 1px;
 }
 
+/* \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 SYNC STATUS PILL \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+.sync-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 0.22rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.72rem; font-weight: 600;
+  border: 1.5px solid transparent;
+  transition: background 0.3s, color 0.3s, border-color 0.3s;
+  cursor: default; white-space: nowrap;
+}
+
+.sync-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  display: inline-block; flex-shrink: 0;
+  transition: background 0.3s;
+}
+
+/* \u2014 States \u2014 */
+.sync-pill.live    { background: #eaf8f3; color: #1d9b6c; border-color: #b2eed8; }
+.sync-pill.live    .sync-dot { background: #2dbd8a; animation: pulse-green 2s infinite; }
+
+.sync-pill.syncing { background: #fdf6e7; color: #b07c10; border-color: #f5d882; }
+.sync-pill.syncing .sync-dot { background: #d89a2a; animation: pulse-amber 1s infinite; }
+
+.sync-pill.offline { background: #fdf0f0; color: #b83030; border-color: #f5b8b8; }
+.sync-pill.offline .sync-dot { background: #e05252; }
+
+.sync-pill.local   { background: #f4f5f7; color: #6b7a99; border-color: #d5d9e5; }
+.sync-pill.local   .sync-dot { background: #9aa0b2; }
+
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(45,189,138,.5); }
+  50%       { box-shadow: 0 0 0 4px rgba(45,189,138,0); }
+}
+@keyframes pulse-amber {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(216,154,42,.6); }
+  50%       { box-shadow: 0 0 0 4px rgba(216,154,42,0); }
+}
+
+
 :root {
   /* ── Palette ── */
   --bg:         #f4f5f7;
