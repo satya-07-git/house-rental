@@ -5,6 +5,29 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RentEase – Rental Home Manager</title>
   <meta name="description" content="Manage your 18 bachelor rooms effortlessly. Track tenant info, bill payments, and occupancy status all in one place." />
+
+  <!-- ── Content Security Policy ── -->
+  <meta http-equiv="Content-Security-Policy"
+    content="
+      default-src 'self';
+      script-src  'self' 'unsafe-inline';
+      style-src   'self' 'unsafe-inline' https://fonts.googleapis.com;
+      font-src    https://fonts.gstatic.com;
+      img-src     'self' data:;
+      connect-src 'none';
+      object-src  'none';
+      base-uri    'self';
+      form-action 'none';
+    " />
+
+  <!-- ── No-cache (prevents stale data leaks) ── -->
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+
+  <!-- ── Clickjacking protection ── -->
+  <meta http-equiv="X-Frame-Options" content="DENY" />
+  <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -12,57 +35,72 @@
 </head>
 <body>
 
-  <!-- ── HEADER ── -->
-  <header class="header">
-    <div class="header-inner">
-      <div class="brand">
-        <div class="brand-icon">🏠</div>
-        <div>
-          <h1 class="brand-name">RentEase</h1>
-          <p class="brand-sub">Rental Home Manager</p>
+  <!-- ═══════════════════════════════════════
+       MAIN APP
+  ═══════════════════════════════════════ -->
+  <div id="appRoot">
+
+    <!-- ── HEADER ── -->
+    <header class="header">
+      <div class="header-inner">
+        <div class="brand">
+          <div class="brand-icon">🏠</div>
+          <div>
+            <h1 class="brand-name">RentEase</h1>
+            <p class="brand-sub">Rental Home Manager</p>
+          </div>
+        </div>
+        <div class="header-stats">
+          <div class="stat-chip">
+            <span class="stat-dot occupied"></span>
+            <span id="occupiedCount">0</span> Occupied
+          </div>
+          <div class="stat-chip">
+            <span class="stat-dot vacant"></span>
+            <span id="vacantCount">18</span> Vacant
+          </div>
+          <div class="stat-chip">
+            <span class="stat-dot paid"></span>
+            <span id="paidCount">0</span> Paid
+          </div>
+          <div class="stat-chip">
+            <span class="stat-dot unpaid"></span>
+            <span id="unpaidCount">0</span> Unpaid
+          </div>
+
         </div>
       </div>
-      <div class="header-stats">
-        <div class="stat-chip" id="statOccupied">
-          <span class="stat-dot occupied"></span>
-          <span id="occupiedCount">0</span> Occupied
+    </header>
+
+    <!-- ── TOOLBAR ── -->
+    <div class="toolbar">
+      <div class="toolbar-inner">
+        <div class="search-section">
+          <div class="search-wrap">
+            <span class="search-icon">🔍</span>
+            <input class="search-input" id="searchInput" type="text" placeholder="Search by name, phone, occupation…" />
+          </div>
+          <div class="room-jump-wrap">
+            <span class="room-jump-icon">🚪</span>
+            <input class="room-jump-input" id="roomJumpInput" type="number" min="1" max="18" placeholder="Room #" title="Jump to room number (1–18)" />
+          </div>
         </div>
-        <div class="stat-chip" id="statVacant">
-          <span class="stat-dot vacant"></span>
-          <span id="vacantCount">18</span> Vacant
-        </div>
-        <div class="stat-chip" id="statPaid">
-          <span class="stat-dot paid"></span>
-          <span id="paidCount">0</span> Paid
-        </div>
-        <div class="stat-chip" id="statUnpaid">
-          <span class="stat-dot unpaid"></span>
-          <span id="unpaidCount">0</span> Unpaid
+        <div class="filter-group">
+          <button class="filter-btn active" data-filter="all">All Rooms</button>
+          <button class="filter-btn" data-filter="occupied">Occupied</button>
+          <button class="filter-btn" data-filter="vacant">Vacant</button>
+          <button class="filter-btn" data-filter="unpaid">Bill Due</button>
         </div>
       </div>
     </div>
-  </header>
 
-  <!-- ── TOOLBAR ── -->
-  <div class="toolbar">
-    <div class="toolbar-inner">
-      <div class="search-wrap">
-        <span class="search-icon">🔍</span>
-        <input class="search-input" id="searchInput" type="text" placeholder="Search by name, room or phone…" />
-      </div>
-      <div class="filter-group">
-        <button class="filter-btn active" data-filter="all">All Rooms</button>
-        <button class="filter-btn" data-filter="occupied">Occupied</button>
-        <button class="filter-btn" data-filter="vacant">Vacant</button>
-        <button class="filter-btn" data-filter="unpaid">Bill Due</button>
-      </div>
-    </div>
-  </div>
+    <!-- ── MAIN GRID ── -->
+    <main class="main">
+      <div class="rooms-grid" id="roomsGrid"></div>
+    </main>
 
-  <!-- ── MAIN GRID ── -->
-  <main class="main">
-    <div class="rooms-grid" id="roomsGrid"></div>
-  </main>
+  </div><!-- /appRoot -->
+
 
   <!-- ── MODAL: ADD / EDIT TENANT ── -->
   <div class="modal-overlay" id="modalOverlay">
@@ -77,22 +115,29 @@
         <div class="form-row">
           <div class="form-group">
             <label for="fName">Full Name <span class="req">*</span></label>
-            <input type="text" id="fName" placeholder="e.g. Rahul Sharma" required />
+            <input type="text" id="fName" placeholder="e.g. Rahul Sharma"
+                   maxlength="60" autocomplete="off" required />
+            <span class="field-error" id="errName"></span>
           </div>
           <div class="form-group">
             <label for="fPhone">Phone Number <span class="req">*</span></label>
-            <input type="tel" id="fPhone" placeholder="+91 9XXXXXXXXX" required />
+            <input type="tel" id="fPhone" placeholder="9XXXXXXXXX"
+                   maxlength="15" autocomplete="off" required />
+            <span class="field-error" id="errPhone"></span>
           </div>
         </div>
 
         <div class="form-row">
           <div class="form-group">
             <label for="fAadhar">Aadhar / ID Number</label>
-            <input type="text" id="fAadhar" placeholder="XXXX XXXX XXXX" />
+            <input type="text" id="fAadhar" placeholder="XXXXXXXXXXXX"
+                   maxlength="14" inputmode="numeric" autocomplete="off" />
+            <span class="field-error" id="errAadhar"></span>
           </div>
           <div class="form-group">
             <label for="fOccupation">Occupation</label>
-            <input type="text" id="fOccupation" placeholder="e.g. Software Engineer" />
+            <input type="text" id="fOccupation" placeholder="e.g. Software Engineer"
+                   maxlength="80" autocomplete="off" />
           </div>
         </div>
 
@@ -100,30 +145,36 @@
           <div class="form-group">
             <label for="fMoveIn">Move-In Date <span class="req">*</span></label>
             <input type="date" id="fMoveIn" required />
+            <span class="field-error" id="errMoveIn"></span>
           </div>
           <div class="form-group">
             <label for="fRent">Monthly Rent (₹) <span class="req">*</span></label>
-            <input type="number" id="fRent" placeholder="e.g. 5000" min="0" required />
+            <input type="number" id="fRent" placeholder="e.g. 5000"
+                   min="100" max="99999" required />
+            <span class="field-error" id="errRent"></span>
           </div>
         </div>
 
         <div class="form-row">
           <div class="form-group">
             <label for="fEmergency">Emergency Contact</label>
-            <input type="tel" id="fEmergency" placeholder="Guardian / Relative phone" />
+            <input type="tel" id="fEmergency" placeholder="Guardian / Relative phone"
+                   maxlength="15" autocomplete="off" />
           </div>
           <div class="form-group">
             <label for="fEmail">Email Address</label>
-            <input type="email" id="fEmail" placeholder="tenant@email.com" />
+            <input type="email" id="fEmail" placeholder="tenant@email.com"
+                   maxlength="120" autocomplete="off" />
+            <span class="field-error" id="errEmail"></span>
           </div>
         </div>
 
         <div class="form-group full">
           <label for="fNotes">Notes</label>
-          <textarea id="fNotes" rows="2" placeholder="Any additional notes…"></textarea>
+          <textarea id="fNotes" rows="2" maxlength="500"
+                    placeholder="Any additional notes…"></textarea>
         </div>
 
-        <!-- Bill status toggle inside form -->
         <div class="bill-toggle-row">
           <span class="bill-label">Bill Payment Status</span>
           <div class="toggle-group">
@@ -155,6 +206,8 @@
     </div>
   </div>
 
+  <!-- Load security module FIRST -->
+  <script src="security.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
