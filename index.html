@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RentEase – Rental Home Manager</title>
+  <meta name="description" content="Manage your 18 bachelor rooms effortlessly. Track tenant info, bill payments, and occupancy status all in one place." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ── HEADER ── -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="brand">
+        <div class="brand-icon">🏠</div>
+        <div>
+          <h1 class="brand-name">RentEase</h1>
+          <p class="brand-sub">Rental Home Manager</p>
+        </div>
+      </div>
+      <div class="header-stats">
+        <div class="stat-chip" id="statOccupied">
+          <span class="stat-dot occupied"></span>
+          <span id="occupiedCount">0</span> Occupied
+        </div>
+        <div class="stat-chip" id="statVacant">
+          <span class="stat-dot vacant"></span>
+          <span id="vacantCount">18</span> Vacant
+        </div>
+        <div class="stat-chip" id="statPaid">
+          <span class="stat-dot paid"></span>
+          <span id="paidCount">0</span> Paid
+        </div>
+        <div class="stat-chip" id="statUnpaid">
+          <span class="stat-dot unpaid"></span>
+          <span id="unpaidCount">0</span> Unpaid
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── TOOLBAR ── -->
+  <div class="toolbar">
+    <div class="toolbar-inner">
+      <div class="search-wrap">
+        <span class="search-icon">🔍</span>
+        <input class="search-input" id="searchInput" type="text" placeholder="Search by name, room or phone…" />
+      </div>
+      <div class="filter-group">
+        <button class="filter-btn active" data-filter="all">All Rooms</button>
+        <button class="filter-btn" data-filter="occupied">Occupied</button>
+        <button class="filter-btn" data-filter="vacant">Vacant</button>
+        <button class="filter-btn" data-filter="unpaid">Bill Due</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── MAIN GRID ── -->
+  <main class="main">
+    <div class="rooms-grid" id="roomsGrid"></div>
+  </main>
+
+  <!-- ── MODAL: ADD / EDIT TENANT ── -->
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal" id="modal">
+      <button class="modal-close" id="modalClose">✕</button>
+      <div class="modal-header">
+        <div class="modal-room-badge" id="modalRoomBadge">Room 1</div>
+        <h2 class="modal-title" id="modalTitle">Add Tenant</h2>
+      </div>
+
+      <form class="modal-form" id="tenantForm" novalidate>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="fName">Full Name <span class="req">*</span></label>
+            <input type="text" id="fName" placeholder="e.g. Rahul Sharma" required />
+          </div>
+          <div class="form-group">
+            <label for="fPhone">Phone Number <span class="req">*</span></label>
+            <input type="tel" id="fPhone" placeholder="+91 9XXXXXXXXX" required />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="fAadhar">Aadhar / ID Number</label>
+            <input type="text" id="fAadhar" placeholder="XXXX XXXX XXXX" />
+          </div>
+          <div class="form-group">
+            <label for="fOccupation">Occupation</label>
+            <input type="text" id="fOccupation" placeholder="e.g. Software Engineer" />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="fMoveIn">Move-In Date <span class="req">*</span></label>
+            <input type="date" id="fMoveIn" required />
+          </div>
+          <div class="form-group">
+            <label for="fRent">Monthly Rent (₹) <span class="req">*</span></label>
+            <input type="number" id="fRent" placeholder="e.g. 5000" min="0" required />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="fEmergency">Emergency Contact</label>
+            <input type="tel" id="fEmergency" placeholder="Guardian / Relative phone" />
+          </div>
+          <div class="form-group">
+            <label for="fEmail">Email Address</label>
+            <input type="email" id="fEmail" placeholder="tenant@email.com" />
+          </div>
+        </div>
+
+        <div class="form-group full">
+          <label for="fNotes">Notes</label>
+          <textarea id="fNotes" rows="2" placeholder="Any additional notes…"></textarea>
+        </div>
+
+        <!-- Bill status toggle inside form -->
+        <div class="bill-toggle-row">
+          <span class="bill-label">Bill Payment Status</span>
+          <div class="toggle-group">
+            <button type="button" class="toggle-opt active" id="billPaidBtn" data-val="paid">✅ Paid</button>
+            <button type="button" class="toggle-opt" id="billUnpaidBtn" data-val="unpaid">❌ Unpaid</button>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button type="button" class="btn-secondary" id="clearTenantBtn">Clear Room</button>
+          <button type="submit" class="btn-primary" id="saveBtn">Save Tenant</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ── TOAST ── -->
+  <div class="toast" id="toast"></div>
+
+  <!-- ── CONFIRM DIALOG ── -->
+  <div class="confirm-overlay" id="confirmOverlay">
+    <div class="confirm-box">
+      <div class="confirm-icon">⚠️</div>
+      <p class="confirm-msg" id="confirmMsg">Are you sure?</p>
+      <div class="confirm-actions">
+        <button class="btn-secondary" id="confirmNo">Cancel</button>
+        <button class="btn-danger" id="confirmYes">Remove</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
