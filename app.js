@@ -1,7 +1,9 @@
 /* ─────────────────────────────────────────────
-   RentEase – app.js
-   Full rental home management logic
+   RentEase – app.js  (Security-hardened)
+   All write operations require authentication.
+   Loads security.js first (see index.html).
 ───────────────────────────────────────────── */
+
 
 const TOTAL_ROOMS = 18;
 const STORAGE_KEY = 'rentease_data';
@@ -28,29 +30,64 @@ const $modal      = document.getElementById('modal');
 const $form       = document.getElementById('tenantForm');
 const $modalTitle = document.getElementById('modalTitle');
 const $roomBadge  = document.getElementById('modalRoomBadge');
-const $searchInput= document.getElementById('searchInput');
+const $searchInput   = document.getElementById('searchInput');
+const $roomJumpInput = document.getElementById('roomJumpInput');
 const $toast      = document.getElementById('toast');
 const $confirmOverlay = document.getElementById('confirmOverlay');
 const $confirmMsg = document.getElementById('confirmMsg');
 
-// ── Init ──
-function init() {
+// ── Init (async for integrity check) ──
+async function init() {
+  SEC.printConsoleWarning();
+
   const saved = localStorage.getItem(STORAGE_KEY);
   if (saved) {
-    rooms = JSON.parse(saved);
-    // Ensure 18 rooms
-    while (rooms.length < TOTAL_ROOMS) rooms.push({ occupied: false, tenant: emptyTenant() });
-    rooms = rooms.slice(0, TOTAL_ROOMS);
+    let parsed;
+    try { parsed = JSON.parse(saved); }
+    catch {
+      showToast('⚠ Data corrupted. Resetting rooms.', 'error');
+      SEC.logAction('DATA_ERROR', 'JSON parse failed — rooms reset');
+      rooms = _freshRooms();
+      save();
+      renderAll();
+      bindEvents();
+      return;
+    }
+
+    // Integrity check
+    const intact = await SEC.checkIntegrity(saved);
+    if (!intact) {
+      showToast('⚠ Data integrity mismatch — possible tampering detected!', 'error');
+      SEC.logAction('INTEGRITY_FAIL', 'Stored data hash does not match');
+    }
+
+    // Schema validation
+    if (!SEC.validateRoomData(parsed)) {
+      showToast('⚠ Invalid data structure detected. Resetting to safe state.', 'error');
+      SEC.logAction('SCHEMA_FAIL', 'Room data failed schema validation — reset');
+      rooms = _freshRooms();
+    } else {
+      rooms = parsed;
+      while (rooms.length < TOTAL_ROOMS) rooms.push({ occupied: false, tenant: emptyTenant() });
+      rooms = rooms.slice(0, TOTAL_ROOMS);
+    }
   } else {
-    rooms = Array.from({ length: TOTAL_ROOMS }, () => ({ occupied: false, tenant: emptyTenant() }));
+    rooms = _freshRooms();
   }
+
   renderAll();
   bindEvents();
 }
 
-// ── Persist ──
+function _freshRooms() {
+  return Array.from({ length: TOTAL_ROOMS }, () => ({ occupied: false, tenant: emptyTenant() }));
+}
+
+// ── Persist (with integrity hash) ──
 function save() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(rooms));
+  const json = JSON.stringify(rooms);
+  localStorage.setItem(STORAGE_KEY, json);
+  SEC.saveIntegrity(json); // async — fire and forget
 }
 
 // ──────────────── RENDER ────────────────
@@ -79,14 +116,47 @@ function roomMatchesFilter(room, idx) {
 
   if (searchQuery) {
     const q = searchQuery.toLowerCase();
-    const roomNum = `room ${idx + 1}`;
-    const name    = room.tenant.name.toLowerCase();
-    const phone   = room.tenant.phone.toLowerCase();
-    const occ     = room.tenant.occupation.toLowerCase();
-    if (!roomNum.includes(q) && !name.includes(q) && !phone.includes(q) && !occ.includes(q)) return false;
+    const name = room.tenant.name.toLowerCase();
+    const phone = room.tenant.phone.toLowerCase();
+    const occ   = room.tenant.occupation.toLowerCase();
+    const email = room.tenant.email.toLowerCase();
+    if (!name.includes(q) && !phone.includes(q) && !occ.includes(q) && !email.includes(q)) return false;
   }
 
   return true;
+}
+
+// ── Room-number jump / highlight ──
+let highlightTimer = null;
+
+function jumpToRoom(num) {
+  const idx = num - 1;
+  if (idx < 0 || idx >= TOTAL_ROOMS) {
+    showToast(`Room number must be between 1 and ${TOTAL_ROOMS}.`, 'error');
+    return;
+  }
+
+  // Reset filters/search so the room is visible
+  currentFilter = 'all';
+  searchQuery   = '';
+  $searchInput.value = '';
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector('.filter-btn[data-filter="all"]').classList.add('active');
+  renderGrid();
+
+  // Find and highlight the card
+  const card = $grid.querySelector(`.room-card[data-room="${idx}"]`);
+  if (!card) return;
+
+  // Clear previous highlight
+  clearTimeout(highlightTimer);
+  $grid.querySelectorAll('.room-card.highlighted').forEach(c => c.classList.remove('highlighted'));
+
+  // Scroll into view then highlight
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  requestAnimationFrame(() => card.classList.add('highlighted'));
+
+  highlightTimer = setTimeout(() => card.classList.remove('highlighted'), 2500);
 }
 
 function renderGrid() {
@@ -129,7 +199,21 @@ function buildCard(room, i) {
       ${t.phone ? `<div class="meta-row"><span class="meta-icon">📞</span><span class="meta-val">${escHtml(t.phone)}</span></div>` : ''}
       ${t.occupation ? `<div class="meta-row"><span class="meta-icon">💼</span><span class="meta-val">${escHtml(t.occupation)}</span></div>` : ''}
       ${t.moveIn ? `<div class="meta-row"><span class="meta-icon">📅</span><span class="meta-val">Since ${formatDate(t.moveIn)}</span></div>` : ''}
-    </div>` : ''}
+    </div>
+
+    ${t.moveIn ? (() => {
+      const dur = getTenancyDuration(t.moveIn);
+      return `
+      <div class="duration-bar">
+        <div class="duration-label">
+          <span class="dur-icon">⏱</span>
+          <span class="dur-title">Tenancy Duration</span>
+        </div>
+        <div class="dur-value">${dur.text}</div>
+        <div class="dur-track"><div class="dur-fill ${dur.fillClass}" style="width:${dur.pct}%"></div></div>
+        <div class="dur-sub">${dur.days} day${dur.days !== 1 ? 's' : ''} total</div>
+      </div>`;
+    })() : ''}` : ''}
 
     <div class="card-footer">
       ${room.occupied
@@ -200,33 +284,79 @@ function getBillToggle() {
 function saveTenant(e) {
   e.preventDefault();
 
-  const name  = document.getElementById('fName').value.trim();
-  const phone = document.getElementById('fPhone').value.trim();
-  const rent  = document.getElementById('fRent').value.trim();
-  const moveIn= document.getElementById('fMoveIn').value;
+  // ── Collect raw values ──
+  const raw = {
+    name:       document.getElementById('fName').value,
+    phone:      document.getElementById('fPhone').value,
+    aadhar:     document.getElementById('fAadhar').value,
+    occupation: document.getElementById('fOccupation').value,
+    moveIn:     document.getElementById('fMoveIn').value,
+    rent:       document.getElementById('fRent').value,
+    emergency:  document.getElementById('fEmergency').value,
+    email:      document.getElementById('fEmail').value,
+    notes:      document.getElementById('fNotes').value,
+  };
 
-  if (!name || !phone || !moveIn || !rent) {
-    showToast('Please fill in all required fields.', 'error');
+  // ── Validate required fields ──
+  let valid = true;
+
+  const setErr = (id, msg) => {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = msg; el.style.display = msg ? 'block' : 'none'; }
+    if (msg) valid = false;
+  };
+
+  // Clear previous errors
+  ['errName','errPhone','errAadhar','errMoveIn','errRent','errEmail'].forEach(id => setErr(id, ''));
+
+  // Name
+  setErr('errName', SEC.validateField('name', raw.name) || '');
+
+  // Phone
+  setErr('errPhone', SEC.validateField('phone', raw.phone) || '');
+
+  // Aadhar (optional)
+  if (raw.aadhar.trim()) setErr('errAadhar', SEC.validateField('aadhar', raw.aadhar) || '');
+
+  // Move-in date
+  if (!raw.moveIn) {
+    setErr('errMoveIn', 'Move-in date is required.');
+  } else if (new Date(raw.moveIn) > new Date()) {
+    setErr('errMoveIn', 'Move-in date cannot be in the future.');
+  }
+
+  // Rent
+  setErr('errRent', SEC.validateField('rent', raw.rent) || '');
+
+  // Email (optional)
+  if (raw.email.trim()) setErr('errEmail', SEC.validateField('email', raw.email) || '');
+
+  if (!valid) {
+    showToast('Please fix the highlighted errors.', 'error');
     return;
   }
+
+  // ── Sanitise all fields before saving ──
+  const action = rooms[activeRoom].occupied ? 'EDIT_TENANT' : 'ADD_TENANT';
 
   rooms[activeRoom] = {
     occupied: true,
     tenant: {
-      name,
-      phone,
-      aadhar:     document.getElementById('fAadhar').value.trim(),
-      occupation: document.getElementById('fOccupation').value.trim(),
-      moveIn,
-      rent,
-      emergency:  document.getElementById('fEmergency').value.trim(),
-      email:      document.getElementById('fEmail').value.trim(),
-      notes:      document.getElementById('fNotes').value.trim(),
-      billStatus: getBillToggle()
+      name:       SEC.sanitise(raw.name, 60),
+      phone:      SEC.sanitise(raw.phone.replace(/[\s\-+()]/g,''), 15),
+      aadhar:     SEC.sanitise(raw.aadhar.replace(/\s/g,''), 12),
+      occupation: SEC.sanitise(raw.occupation, 80),
+      moveIn:     raw.moveIn,
+      rent:       SEC.sanitise(raw.rent, 10),
+      emergency:  SEC.sanitise(raw.emergency, 15),
+      email:      SEC.sanitise(raw.email, 120),
+      notes:      SEC.sanitise(raw.notes, 500),
+      billStatus: getBillToggle(),
     }
   };
 
   save();
+  SEC.logAction(action, `Room ${activeRoom + 1} — ${rooms[activeRoom].tenant.name}`);
   renderAll();
   closeModal();
   showToast(`✅ Tenant info saved for Room ${activeRoom + 1}`, 'success');
@@ -240,6 +370,7 @@ function confirmClearRoom() {
   openConfirm(
     `Remove tenant from Room ${roomNum}? This will clear all tenant data.`,
     () => {
+      SEC.logAction('REMOVE_TENANT', `Room ${roomNum} cleared`);
       rooms[activeRoom] = { occupied: false, tenant: emptyTenant() };
       save();
       renderAll();
@@ -256,8 +387,9 @@ function toggleBill(roomIdx) {
   const cur = rooms[roomIdx].tenant.billStatus;
   rooms[roomIdx].tenant.billStatus = cur === 'paid' ? 'unpaid' : 'paid';
   save();
-  renderAll();
   const status = rooms[roomIdx].tenant.billStatus;
+  SEC.logAction('BILL_TOGGLE', `Room ${roomIdx + 1} marked ${status}`);
+  renderAll();
   showToast(
     `Room ${roomIdx + 1} bill marked as ${status}.`,
     status === 'paid' ? 'success' : 'error'
@@ -288,6 +420,7 @@ function showToast(msg, type = 'info') {
 }
 
 // ──────────────── EVENTS ────────────────
+
 
 function bindEvents() {
 
@@ -329,10 +462,22 @@ function bindEvents() {
   document.getElementById('confirmNo').addEventListener('click', closeConfirm);
   $confirmOverlay.addEventListener('click', e => { if (e.target === $confirmOverlay) closeConfirm(); });
 
-  // Search
+  // Keyword search
   $searchInput.addEventListener('input', e => {
     searchQuery = e.target.value.trim();
     renderGrid();
+  });
+
+  // Room-number jump — trigger on Enter or when value is valid
+  $roomJumpInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      const val = parseInt($roomJumpInput.value, 10);
+      if (!isNaN(val)) { jumpToRoom(val); $roomJumpInput.blur(); }
+    }
+  });
+  $roomJumpInput.addEventListener('change', e => {
+    const val = parseInt(e.target.value, 10);
+    if (!isNaN(val) && val >= 1 && val <= TOTAL_ROOMS) jumpToRoom(val);
   });
 
   // Filter buttons
@@ -354,10 +499,15 @@ function bindEvents() {
   });
 }
 
-// ──────────────── HELPERS ────────────────
-
 function escHtml(str) {
-  return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  // Covers all 5 dangerous characters — prevents XSS via innerHTML
+  return (str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;')
+    .replace(/\//g, '&#x2F;');
 }
 
 function formatDate(str) {
@@ -366,5 +516,68 @@ function formatDate(str) {
   return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
+/**
+ * Returns how long a tenant has occupied the room.
+ * @param {string} moveInStr  – ISO date string (YYYY-MM-DD)
+ * @returns {{ text, days, pct }}
+ *   text – human-friendly string  e.g. "2 yrs 4 mo 12 days"
+ *   days – total elapsed days
+ *   pct  – 0-100 fill for the progress bar (caps at 3 years = 100%)
+ */
+function getTenancyDuration(moveInStr) {
+  if (!moveInStr) return { text: '—', days: 0, pct: 0 };
+
+  const start = new Date(moveInStr);
+  const now   = new Date();
+
+  if (start > now) return { text: 'Future date', days: 0, pct: 0 };
+
+  const totalMs  = now - start;
+  const totalDays = Math.floor(totalMs / 864e5);
+
+  let years  = 0, months = 0, days = 0;
+  const cur  = new Date(start);
+
+  // Count full years
+  while (true) {
+    const next = new Date(cur);
+    next.setFullYear(next.getFullYear() + 1);
+    if (next > now) break;
+    years++;
+    cur.setFullYear(cur.getFullYear() + 1);
+  }
+  // Count full months
+  while (true) {
+    const next = new Date(cur);
+    next.setMonth(next.getMonth() + 1);
+    if (next > now) break;
+    months++;
+    cur.setMonth(cur.getMonth() + 1);
+  }
+  // Remaining days
+  days = Math.floor((now - cur) / 864e5);
+
+  const parts = [];
+  if (years)  parts.push(`${years} yr${years  !== 1 ? 's' : ''}`);
+  if (months) parts.push(`${months} mo`);
+  if (days || parts.length === 0) parts.push(`${days} day${days !== 1 ? 's' : ''}`);
+
+  const text = parts.join(' ');
+
+  // Progress bar: 0 → 0 days, 100 → 3 years (1095 days)
+  const pct = Math.min(100, Math.round((totalDays / 1095) * 100));
+
+  // Colour tier
+  let fillClass = 'fresh';
+  if (totalDays >= 730)      fillClass = 'long';      // 2+ years
+  else if (totalDays >= 365) fillClass = 'veteran';   // 1–2 years
+  else if (totalDays >= 90)  fillClass = 'settling';  // 3–12 months
+
+  return { text, days: totalDays, pct, fillClass };
+}
+
 // ── Boot ──
 init();
+
+// Auto-refresh duration counters every 60 seconds
+setInterval(renderGrid, 60_000);
