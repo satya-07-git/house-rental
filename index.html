@@ -6,7 +6,7 @@
   <title>RentEase – Rental Home Manager</title>
   <meta name="description" content="Manage your 18 bachelor rooms effortlessly. Track tenant info, bill payments, and occupancy status all in one place." />
 
-  <!-- ── Content Security Policy (Firebase-enabled) ── -->
+  <!-- ── Content Security Policy (Firebase + JSONBlob enabled) ── -->
   <meta http-equiv="Content-Security-Policy"
     content="
       default-src 'self';
@@ -15,6 +15,8 @@
       font-src    https://fonts.gstatic.com;
       img-src     'self' data:;
       connect-src 'self'
+                  https://jsonblob.com
+                  https://json.extendsclass.com
                   https://*.firebaseio.com
                   wss://*.firebaseio.com
                   https://*.googleapis.com;
@@ -70,11 +72,14 @@
             <span class="stat-dot unpaid"></span>
             <span id="unpaidCount">0</span> Unpaid
           </div>
-          <!-- Live sync status -->
+          <!-- Live sync status + share -->
           <div class="sync-pill" id="syncPill" title="Cloud sync status">
             <span class="sync-dot" id="syncDot"></span>
             <span id="syncText">Connecting…</span>
           </div>
+          <button class="share-btn" id="shareBtn" title="Copy shareable sync link">
+            🔗 Share Link
+          </button>
         </div>
       </div>
     </header>
@@ -216,11 +221,12 @@
   <!-- Load security module FIRST -->
   <script src="security.js"></script>
 
-  <!-- Firebase SDK (v10 compat) -->
+  <!-- Cloud sync module (JSONBlob.com — free, no API key) -->
+  <script src="sync.js"></script>
+
+  <!-- Firebase SDK (v10 compat) — optional, used if firebase-config.js is set up -->
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
-
-  <!-- Your Firebase project config (edit this file) -->
   <script src="firebase-config.js"></script>
 
   <script src="app.js"></script>

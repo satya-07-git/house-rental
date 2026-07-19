@@ -1,13 +1,13 @@
 /* ─────────────────────────────────────────────
-   RentEase – app.js  (Firebase Real-Time Sync)
-   All devices share the same live database.
-   Edit firebase-config.js to connect your project.
+   RentEase – app.js  (Cloud Sync Edition)
+   ⬢ Primary:  JSONBlob.com  — zero setup, works instantly
+   ⬢ Optional: Firebase RTDB — configure firebase-config.js
 ───────────────────────────────────────────── */
 
 
 const TOTAL_ROOMS = 18;
 const STORAGE_KEY = 'rentease_data';   // local offline cache key
-const FB_PATH     = 'rentease/rooms';  // Firebase Realtime DB path
+const FB_PATH     = 'rentease/rooms';  // Firebase path (if used)
 
 // ── Default tenant structure ──
 const emptyTenant = () => ({
@@ -24,11 +24,10 @@ let currentFilter = 'all';
 let searchQuery = '';
 let confirmCallback = null;
 
-// ── Firebase state ──
-let _db        = null;   // Firebase database instance
-let _roomsRef  = null;   // DB reference for rooms
-let _fbReady   = false;  // true when Firebase is initialised
-let _ignoreNext = false; // suppress echo of our own writes
+// ── Sync mode flags ──
+let _fbReady    = false;  // Firebase connected
+let _blobReady  = false;  // JSONBlob connected
+let _ignoreNext = false;  // suppress echo of our own Firebase write
 
 // ── DOM refs ──
 const $grid       = document.getElementById('roomsGrid');
@@ -48,103 +47,144 @@ const $confirmMsg = document.getElementById('confirmMsg');
 async function init() {
   SEC.printConsoleWarning();
 
-  // Try Firebase first; fall back to localStorage if not configured
+  // Step 1: Try Firebase (optional, requires firebase-config.js setup)
   const fbOk = initFirebase();
-  if (!fbOk) await initFromLocalStorage();
+
+  // Step 2: Always init JSONBlob sync (works with zero setup)
+  await initCloudSync(fbOk);
+
+  // Step 3: If neither is ready yet, load from localStorage immediately
+  if (!fbOk && !_blobReady) {
+    await initFromLocalStorage();
+  }
 
   bindEvents();
+
+  // Pause polling when tab is hidden; resume when visible
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) CLOUDSYNC.stopPolling();
+    else CLOUDSYNC.resumePolling();
+  });
 }
 
-// ── Firebase init ──
+// ──────────────── JSONBLOB CLOUD SYNC ────────────────
+
+async function initCloudSync(firebaseAlreadyReady) {
+  // Firebase takes priority if configured — skip blob init
+  if (firebaseAlreadyReady) return;
+
+  try {
+    const existingBlobId = await CLOUDSYNC.init(
+      _onRemoteChange,   // called when another device changes data
+      updateSyncUI       // called when connection state changes
+    );
+
+    if (existingBlobId) {
+      // Returning device or shared URL — pull current data
+      updateSyncUI('syncing');
+      const data = await CLOUDSYNC.pull();
+      if (data && Array.isArray(data.rooms)) {
+        _applyRemoteRooms(data.rooms);
+        _blobReady = true;
+        CLOUDSYNC.resumePolling();
+        updateSyncUI('live');
+      } else {
+        // Blob missing/expired — re-create it
+        await _createNewBlob();
+      }
+    } else {
+      // First ever launch — create a new cloud blob
+      await initFromLocalStorage();   // load local data first
+      await _createNewBlob();
+    }
+  } catch (e) {
+    console.warn('[SYNC] initCloudSync error:', e);
+    updateSyncUI('offline');
+  }
+}
+
+async function _createNewBlob() {
+  const blobId = await CLOUDSYNC.createBlob(rooms);
+  if (blobId) {
+    _blobReady = true;
+    renderAll();
+    // Automatically show share toast on first creation
+    showToast('☁ Cloud sync active — tap "🔗 Share Link" to sync other devices!', 'success');
+  }
+}
+
+// Called by CLOUDSYNC polling when a newer version arrives from another device
+function _onRemoteChange(remoteRooms) {
+  if (!SEC.validateRoomData(remoteRooms)) {
+    console.warn('[SYNC] Remote data failed schema validation — ignored');
+    return;
+  }
+  _applyRemoteRooms(remoteRooms);
+  showToast('🔄 Dashboard updated from another device.', 'info');
+  SEC.logAction('REMOTE_UPDATE', 'Data received from cloud');
+}
+
+function _applyRemoteRooms(remoteRooms) {
+  rooms = remoteRooms;
+  while (rooms.length < TOTAL_ROOMS) rooms.push({ occupied: false, tenant: emptyTenant() });
+  rooms = rooms.slice(0, TOTAL_ROOMS);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(rooms));
+  renderAll();
+}
+
+// ──────────────── FIREBASE (OPTIONAL) ────────────────
+
 function initFirebase() {
-  // Guard: config not filled in yet
   if (
     typeof FIREBASE_CONFIG === 'undefined' ||
     !FIREBASE_CONFIG.apiKey ||
     FIREBASE_CONFIG.apiKey === 'YOUR_API_KEY'
-  ) {
-    updateSyncUI('local');
-    return false;
-  }
+  ) return false;
 
   try {
-    firebase.initializeApp(FIREBASE_CONFIG);
-    _db       = firebase.database();
-    _roomsRef = _db.ref(FB_PATH);
-    _fbReady  = true;
+    const _db      = firebase.initializeApp(FIREBASE_CONFIG);
+    const _roomsRef = firebase.database().ref(FB_PATH);
+    _fbReady = true;
 
-    // ── Connection status monitor ──
-    _db.ref('.info/connected').on('value', snap => {
-      updateSyncUI(snap.val() === true ? 'live' : 'offline');
-    });
+    firebase.database().ref('.info/connected').on('value', snap =>
+      updateSyncUI(snap.val() === true ? 'live' : 'offline')
+    );
 
-    // ── Seed Firebase if empty, then listen ──
     updateSyncUI('syncing');
     _roomsRef.once('value').then(snap => {
-      if (snap.val() === null) {
-        // First launch — migrate localStorage data into Firebase
-        _seedFirebase();
-      }
-      // Start real-time listener (fires immediately + on every remote change)
-      _roomsRef.on('value', _onFirebaseData);
+      if (snap.val() === null) _seedFirebase(_roomsRef);
+      _roomsRef.on('value', snapshot => {
+        if (_ignoreNext) { _ignoreNext = false; return; }
+        const raw = snapshot.val();
+        if (!raw) return;
+        const parsed = Array.isArray(raw)
+          ? raw
+          : Object.keys(raw).sort((a,b) => +a - +b).map(k => raw[k]);
+        if (!SEC.validateRoomData(parsed)) return;
+        _applyRemoteRooms(parsed);
+      });
     }).catch(err => {
       console.warn('Firebase read failed:', err);
       updateSyncUI('offline');
       initFromLocalStorage();
     });
-
     return true;
   } catch (err) {
     console.warn('Firebase init failed:', err.message);
-    updateSyncUI('local');
     return false;
   }
 }
 
-// Upload localStorage data to Firebase on first launch
-function _seedFirebase() {
+function _seedFirebase(ref) {
   const saved = localStorage.getItem(STORAGE_KEY);
   let data = _freshRooms();
-  if (saved) {
-    try {
-      const parsed = JSON.parse(saved);
-      if (SEC.validateRoomData(parsed)) data = parsed;
-    } catch { /* ignore */ }
-  }
+  if (saved) { try { const p = JSON.parse(saved); if (SEC.validateRoomData(p)) data = p; } catch {} }
   _ignoreNext = true;
-  _roomsRef.set(data);
+  ref.set(data);
 }
 
-// Real-time listener — fires for every change from any device
-function _onFirebaseData(snapshot) {
-  if (_ignoreNext) { _ignoreNext = false; return; }
+// ──────────────── LOCAL STORAGE FALLBACK ────────────────
 
-  const raw = snapshot.val();
-  if (!raw) return;
-
-  // Firebase stores arrays as objects when there are gaps, normalise
-  const parsed = Array.isArray(raw)
-    ? raw
-    : Object.keys(raw).sort((a,b) => +a - +b).map(k => raw[k]);
-
-  // Schema guard
-  if (!SEC.validateRoomData(parsed)) {
-    console.warn('Firebase data failed schema validation — ignored');
-    SEC.logAction('FB_SCHEMA_FAIL', 'Remote data rejected');
-    return;
-  }
-
-  rooms = parsed;
-  while (rooms.length < TOTAL_ROOMS) rooms.push({ occupied: false, tenant: emptyTenant() });
-  rooms = rooms.slice(0, TOTAL_ROOMS);
-
-  // Keep local cache in sync for offline use
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(rooms));
-
-  renderAll();
-}
-
-// ── Fallback: load from localStorage (no Firebase) ──
 async function initFromLocalStorage() {
   const saved = localStorage.getItem(STORAGE_KEY);
   if (saved) {
@@ -153,27 +193,13 @@ async function initFromLocalStorage() {
     catch {
       showToast('⚠ Local data corrupted. Resetting.', 'error');
       SEC.logAction('DATA_ERROR', 'JSON parse failed — reset');
-      rooms = _freshRooms();
-      save();
-      renderAll();
-      return;
+      rooms = _freshRooms(); save(); renderAll(); return;
     }
-
     const intact = await SEC.checkIntegrity(saved);
-    if (!intact) {
-      showToast('⚠ Data integrity mismatch detected!', 'error');
-      SEC.logAction('INTEGRITY_FAIL', 'Hash mismatch');
-    }
-
-    if (!SEC.validateRoomData(parsed)) {
-      showToast('⚠ Invalid data. Resetting to safe state.', 'error');
-      SEC.logAction('SCHEMA_FAIL', 'Schema validation failed');
-      rooms = _freshRooms();
-    } else {
-      rooms = parsed;
-      while (rooms.length < TOTAL_ROOMS) rooms.push({ occupied: false, tenant: emptyTenant() });
-      rooms = rooms.slice(0, TOTAL_ROOMS);
-    }
+    if (!intact) showToast('⚠ Data integrity mismatch!', 'error');
+    rooms = SEC.validateRoomData(parsed) ? parsed : _freshRooms();
+    while (rooms.length < TOTAL_ROOMS) rooms.push({ occupied: false, tenant: emptyTenant() });
+    rooms = rooms.slice(0, TOTAL_ROOMS);
   } else {
     rooms = _freshRooms();
   }
@@ -189,42 +215,44 @@ function _freshRooms() {
 function save() {
   const json = JSON.stringify(rooms);
 
-  if (_fbReady && _roomsRef) {
-    // Write to Firebase — propagates to ALL connected devices
+  // Firebase (if configured)
+  if (_fbReady) {
     updateSyncUI('syncing');
-    _ignoreNext = true;  // don't re-render from our own write
-    _roomsRef.set(rooms)
-      .then(()  => { updateSyncUI('live'); })
-      .catch(() => { updateSyncUI('offline'); });
+    _ignoreNext = true;
+    firebase.database().ref(FB_PATH).set(rooms)
+      .then(()  => updateSyncUI('live'))
+      .catch(() => updateSyncUI('offline'));
   }
 
-  // Always cache locally (works offline too)
+  // JSONBlob (primary zero-setup sync)
+  if (_blobReady) {
+    CLOUDSYNC.push(rooms);
+  }
+
+  // Always cache locally
   localStorage.setItem(STORAGE_KEY, json);
-  SEC.saveIntegrity(json); // fire-and-forget
+  SEC.saveIntegrity(json);
 }
 
 // ──────────────── SYNC UI ────────────────
 
 function updateSyncUI(state) {
   const pill = document.getElementById('syncPill');
-  const dot  = document.getElementById('syncDot');
   const txt  = document.getElementById('syncText');
-  if (!pill || !dot || !txt) return;
-
+  if (!pill || !txt) return;
   pill.className = 'sync-pill ' + state;
   const map = {
-    live:    { text: 'Live',        title: 'Synced with cloud — all devices up to date' },
-    syncing: { text: 'Syncing…',   title: 'Saving to cloud…' },
-    offline: { text: 'Offline',     title: 'No connection — changes will sync when back online' },
-    local:   { text: 'Local only',  title: 'Firebase not configured — data is stored locally only' },
+    live:    { text: '☁ Live',       title: 'Cloud synced — all devices are up to date' },
+    syncing: { text: 'Syncing…',    title: 'Saving to cloud…' },
+    offline: { text: '🟥 Offline',   title: 'No connection — changes queued, will sync when back online' },
+    local:   { text: '💾 Local',    title: 'Running in local-only mode' },
   };
   const info = map[state] || map.local;
-  txt.textContent  = info.text;
-  pill.title       = info.title;
+  txt.textContent = info.text;
+  pill.title      = info.title;
 }
 
-
-// ──────────────── RENDER ────────────────
+// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 RENDER \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 function renderAll() {
   renderStats();
@@ -557,6 +585,25 @@ function showToast(msg, type = 'info') {
 
 
 function bindEvents() {
+
+  // \u2500\u2500 Share sync link button \u2500\u2500
+  const $shareBtn = document.getElementById('shareBtn');
+  if ($shareBtn) {
+    $shareBtn.addEventListener('click', async () => {
+      const url = CLOUDSYNC.getShareUrl();
+      if (!url) {
+        showToast('\u26a0 Sync not ready yet. Please wait a moment.', 'error');
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(url);
+        showToast('\ud83d\udd17 Share link copied! Paste it in any browser to sync.', 'success');
+      } catch {
+        // Fallback: show the URL
+        prompt('Copy this sync link:', url);
+      }
+    });
+  }
 
   // Grid click delegation
   $grid.addEventListener('click', e => {
